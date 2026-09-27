@@ -20,6 +20,9 @@ name: Tomahawk Release Builder
 #   uploads artifacts but NEVER publishes a live release.
 # - Two upstream bugs fixed: the "Previous commit" step crashed when no prior
 #   release existed (empty-tag guard added); "Curren commit" step-name typo fixed.
+# - 2026-09-27: first-release guard — on a fresh single-commit repo, HEAD~N does
+#   not exist, so rev-parse falls back to empty and the changelog writes
+#   "Initial release" instead of failing the run.
 # All action pins (SHAs) are byte-identical to upstream — verified 2026-09-27.
 
 on:
@@ -87,7 +90,10 @@ jobs:
             fi
           fi
           echo "commit_count_diff=$commit_count_diff"
-          prev_release_sha=$(git rev-parse --short HEAD~$commit_count_diff)
+          # First release on a fresh repo: HEAD~N may not exist (single-commit
+          # history). Fall back to empty so the changelog step writes
+          # "Initial release" instead of crashing rev-parse.
+          prev_release_sha=$(git rev-parse --short HEAD~$commit_count_diff 2>/dev/null || echo "")
           echo "PREV_RELEASE_SHA=$prev_release_sha"
           echo "PREV_RELEASE_SHA=$prev_release_sha" >> $GITHUB_OUTPUT
           echo "PREV_TAG_NAME=${{ steps.last_release.outputs.tag_name }}"
@@ -96,6 +102,11 @@ jobs:
       - name: Commit logs
         id: commit_logs
         run: |
+          if [ -z "${{ steps.previous_commit.outputs.PREV_RELEASE_SHA }}" ]; then
+            echo "COMMIT_LOGS<<{delimiter}" >> $GITHUB_OUTPUT
+            echo "- Initial release." >> $GITHUB_OUTPUT
+            echo "{delimiter}" >> $GITHUB_OUTPUT
+          else
           echo "COMMIT_LOGS<<{delimiter}
           $(curl -H "Accept: application/vnd.github.v3+json" \
             -H "Authorization: Bearer ${{ github.token }}" \
@@ -103,6 +114,7 @@ jobs:
             | jq '[.commits[]|{message:(.commit.message | split("\n")), username:.author.login}]' \
             | jq -r '.[]|"- \(.message | first) (@\(.username))"')
           {delimiter}" >> $GITHUB_OUTPUT
+          fi
 
   build-app:
     name: Build release app
