@@ -2,6 +2,13 @@ buildscript {
     dependencies {
         classpath(libs.android.shortcut.gradle)
         classpath(sylibs.gradleversionsx)
+        // Instinct fix 2026-09-27: AGP 8.13.2's bundled R8 only understands Kotlin
+        // metadata up to 2.3; the project compiles with Kotlin 2.4.20. R8 spent
+        // 12-15 min emitting thousands of "malformed kotlin.Metadata" warnings,
+        // then the hosted runner died ("lost communication") in
+        // :app:minifyReleaseWithR8 on both v1.0.0 attempts. Pinning a newer
+        // standalone R8 on the buildscript classpath makes AGP use it instead.
+        classpath("com.android.tools:r8:9.4.26")
     }
 }
 
