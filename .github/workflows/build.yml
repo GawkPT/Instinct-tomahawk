@@ -1,0 +1,207 @@
+name: Tomahawk Release Builder
+# Builds the private Tomahawk fork (Anikku rebrand, repo: GawkPT/tomahawk)
+# and publishes a GitHub release with signed APKs.
+#
+# Trigger: push a v* tag, or manual Run workflow dispatch.
+#
+# Fork deltas vs upstream komikku-app/anikku build_release.yml:
+# - No -Pinclude-telemetry (the google-services.json inherited from upstream is
+#   inert without it; telemetry stays OFF).
+# - No -Penable-updater for v1 (the in-app updater would query the GitHub API
+#   against a PRIVATE repo without auth; builds ship with the updater inert).
+# - Secrets keep upstream names: SIGNING_KEY / ALIAS / KEY_STORE_PASSWORD / KEY_PASSWORD.
+# - Artifacts renamed Anikku-* -> Tomahawk-*.
+# - Release notes repointed to GawkPT/tomahawk; compare API call authenticated
+#   (upstream's curl was unauthenticated; the Bearer token avoids API rate limits).
+# - draft: false (upstream used draft: true). Releases go LIVE immediately on tag
+#   push — deliberate v1 choice so the APK is downloadable with zero extra clicks.
+# - workflow_dispatch added for manual test builds; the release-app job is guarded
+#   by `if: startsWith(github.ref, 'refs/tags/v')` so a manual run builds and
+#   uploads artifacts but NEVER publishes a live release.
+# - Two upstream bugs fixed: the "Previous commit" step crashed when no prior
+#   release existed (empty-tag guard added); "Curren commit" step-name typo fixed.
+# All action pins (SHAs) are byte-identical to upstream — verified 2026-09-27.
+
+on:
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-build:
+    runs-on: 'ubuntu-24.04'
+    outputs:
+      VERSION_TAG: ${{ steps.get_tag.outputs.VERSION_TAG }}
+      CURRENT_SHA: ${{ steps.current_commit.outputs.CURRENT_SHA }}
+      PREV_RELEASE_SHA: ${{ steps.previous_commit.outputs.PREV_RELEASE_SHA }}
+      COMMIT_LOGS: ${{ steps.commit_logs.outputs.COMMIT_LOGS }}
+      PREV_TAG_NAME: ${{ steps.previous_commit.outputs.PREV_TAG_NAME }}
+    steps:
+      - name: Get tag name (${{ github.ref }})
+        id: get_tag
+        run: |
+          version_tag=$(echo ${GITHUB_REF/refs\/tags\//} | sed -r 's/^refs\/(heads|tags)\///' | sed -r 's/[-\/]+/_/g')
+          echo "VERSION_TAG=$version_tag"
+          echo "VERSION_TAG=$version_tag" >> $GITHUB_OUTPUT
+
+      - name: Clone Repository (${{ steps.get_tag.outputs.VERSION_TAG }})
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Get previous release
+        id: last_release
+        uses: InsonusK/get-latest-release@7a9ff16c8c6b7ead5d71c0f1cc61f2703170eade # v1.1.0
+        with:
+          myToken: ${{ github.token }}
+          exclude_types: "draft|prerelease"
+          view_top: 1
+
+      - name: Current commit
+        id: current_commit
+        run: |
+          commit_count=$(git rev-list --count HEAD)
+          current_sha=$(git rev-parse --short HEAD)
+          echo "COMMIT_COUNT=$commit_count"
+          echo "COMMIT_COUNT=$commit_count" >> $GITHUB_OUTPUT
+          echo "CURRENT_SHA=$current_sha"
+          echo "CURRENT_SHA=$current_sha" >> $GITHUB_OUTPUT
+
+      - name: Previous commit
+        id: previous_commit
+        run: |
+          if [ -z "${{ steps.last_release.outputs.tag_name }}" ]; then
+            commit_count_diff=1
+          else
+            commit_count_diff=$(git rev-list --count "${{ steps.last_release.outputs.tag_name }}"..HEAD)
+            if [ "${commit_count_diff}" -eq 0 ]; then
+              commit_count_diff=1
+            fi
+          fi
+          echo "commit_count_diff=$commit_count_diff"
+          prev_release_sha=$(git rev-parse --short HEAD~$commit_count_diff)
+          echo "PREV_RELEASE_SHA=$prev_release_sha"
+          echo "PREV_RELEASE_SHA=$prev_release_sha" >> $GITHUB_OUTPUT
+          echo "PREV_TAG_NAME=${{ steps.last_release.outputs.tag_name }}"
+          echo "PREV_TAG_NAME=${{ steps.last_release.outputs.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Commit logs
+        id: commit_logs
+        run: |
+          echo "COMMIT_LOGS<<{delimiter}
+          $(curl -H "Accept: application/vnd.github.v3+json" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            "https://api.github.com/repos/GawkPT/tomahawk/compare/${{ steps.previous_commit.outputs.PREV_RELEASE_SHA }}...${{ steps.current_commit.outputs.CURRENT_SHA }}" \
+            | jq '[.commits[]|{message:(.commit.message | split("\n")), username:.author.login}]' \
+            | jq -r '.[]|"- \(.message | first) (@\(.username))"')
+          {delimiter}" >> $GITHUB_OUTPUT
+
+  build-app:
+    name: Build release app
+    runs-on: 'ubuntu-24.04'
+    # First builds of a Mihon-class app take 25-45 min on hosted runners;
+    # 90 min is a generous ceiling that also catches hung Gradle daemons.
+    timeout-minutes: 90
+    needs: prepare-build
+    steps:
+      - name: Clone Repository (${{ needs.prepare-build.outputs.VERSION_TAG }})
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up gradle
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
+
+      - name: Check code format
+        run: ./gradlew spotlessCheck
+
+      - name: Build app
+        run: ./gradlew assembleRelease
+
+      - name: Run unit tests
+        run: ./gradlew testReleaseUnitTest
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          path: "**/*.apk"
+          retention-days: 1
+
+      - name: Upload mapping
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: mapping-${{ github.sha }}
+          path: app/build/outputs/mapping/release
+
+  release-app:
+    # Only tag pushes publish releases. A manual "Run workflow" dispatch stops
+    # after build-app (its APKs stay downloadable from the Actions run page),
+    # so nobody can accidentally ship a live release from a test run.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: 'ubuntu-24.04'
+    needs:
+      - prepare-build
+      - build-app
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          merge-multiple: true
+
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@f30bdd30588842ac76044ecdbd4b6d0e3e813478 # upstream pin (2024-02-29), byte-identical to komikku-app/anikku
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: '35.0.1'
+
+      - name: Get SHA & clean up build artifacts
+        id: get_sha
+        run: |
+          set -e
+          mv app/build/outputs/apk/release/app-universal-release-unsigned-signed.apk Tomahawk-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+          mv app/build/outputs/apk/release/app-arm64-v8a-release-unsigned-signed.apk Tomahawk-arm64-v8a-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+          mv app/build/outputs/apk/release/app-armeabi-v7a-release-unsigned-signed.apk Tomahawk-armeabi-v7a-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+          mv app/build/outputs/apk/release/app-x86-release-unsigned-signed.apk Tomahawk-x86-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+          mv app/build/outputs/apk/release/app-x86_64-release-unsigned-signed.apk Tomahawk-x86_64-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ needs.prepare-build.outputs.VERSION_TAG }}
+          name: Tomahawk ${{ needs.prepare-build.outputs.VERSION_TAG }}
+          body: |
+            #### What's Changed
+
+            ${{ needs.prepare-build.outputs.COMMIT_LOGS }}
+
+            **Full Changelog**: [GawkPT/tomahawk@${{ needs.prepare-build.outputs.PREV_TAG_NAME }}...${{ needs.prepare-build.outputs.VERSION_TAG }}](https://github.com/GawkPT/tomahawk/compare/${{ needs.prepare-build.outputs.PREV_TAG_NAME }}...${{ needs.prepare-build.outputs.VERSION_TAG }})
+
+            > [!TIP]
+            > If you are unsure which version to download then go with `Tomahawk-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk` (universal). Most modern phones want the `arm64-v8a` build.
+          files: |
+            Tomahawk-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+            Tomahawk-arm64-v8a-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+            Tomahawk-armeabi-v7a-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+            Tomahawk-x86-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+            Tomahawk-x86_64-${{ needs.prepare-build.outputs.VERSION_TAG }}.apk
+          draft: false
+          prerelease: false

@@ -1,0 +1,51 @@
+package tachiyomi.domain.chapter.model
+
+data class ChapterUpdate(
+    val id: Long,
+    val mangaId: Long? = null,
+    val read: Boolean? = null,
+    val bookmark: Boolean? = null,
+    // AY -->
+    val fillermark: Boolean? = null,
+    // <-- AY
+    val lastPageRead: Long? = null,
+    val totalPages: Long? = null,
+    val dateFetch: Long? = null,
+    val sourceOrder: Long? = null,
+    val url: String? = null,
+    val name: String? = null,
+    val dateUpload: Long? = null,
+    val chapterNumber: Double? = null,
+    val scanlator: String? = null,
+    // AY -->
+    val summary: String? = null,
+    val previewUrl: String? = null,
+    // <-- AY
+    val version: Long? = null,
+)
+
+fun Chapter.toChapterUpdate(): ChapterUpdate {
+    return ChapterUpdate(
+        id,
+        mangaId,
+        read,
+        bookmark,
+        // AY -->
+        fillermark,
+        // <-- AY
+        lastPageRead,
+        totalPages,
+        dateFetch,
+        sourceOrder,
+        url,
+        name,
+        dateUpload,
+        chapterNumber,
+        scanlator,
+        // AY -->
+        summary,
+        previewUrl,
+        // <-- AY
+        version,
+    )
+}

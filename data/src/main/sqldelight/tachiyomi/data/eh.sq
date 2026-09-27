@@ -1,0 +1,39 @@
+deleteBySyncId:
+DELETE FROM anime_sync WHERE sync_id = :syncId;
+
+migrateSource:
+UPDATE animes
+SET source = :newId
+WHERE source = :oldId;
+
+-- KMK -->
+migrateMergedSource:
+UPDATE merged
+SET anime_source = :newId
+WHERE anime_source = :oldId;
+
+migrateSourceSavedSearch:
+UPDATE saved_search
+SET source = :newId
+WHERE source = :oldId;
+
+migrateSourceFeed:
+UPDATE feed_saved_search
+SET source = :newId
+WHERE source = :oldId;
+
+getEpisodesByAnimeIds:
+SELECT * FROM episodes WHERE anime_id IN :animeIds;
+
+resetPlayerViewerForAllAnime:
+UPDATE animes
+SET viewer = 0;
+
+fixPlayerViewerBackupBug:
+UPDATE animes
+SET viewer = 0
+WHERE viewer = -1;
+
+addAllAnimeInDatabaseToLibrary:
+UPDATE animes
+SET favorite = 1;
